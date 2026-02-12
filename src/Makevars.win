@@ -1,0 +1,17 @@
+CXX_STD = CXX14
+
+PKG_CPPFLAGS = -I../inst/include -Iexactextract
+
+OBJECTS = libgeos_init.o denseburn_init.o denseburn.o scanline_burn.o cpp11.o \
+  exactextract/raster_cell_intersection.o \
+  exactextract/cell.o \
+  exactextract/traversal.o \
+  exactextract/traversal_areas.o \
+  exactextract/floodfill.o \
+  exactextract/geos_utils.o \
+  exactextract/measures.o \
+  exactextract/coordinate.o \
+  exactextract/side.o \
+  exactextract/box.o \
+  exactextract/grid.o \
+  exactextract/perimeter_distance.o

@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.Rdata
+.httr-oauth
+.DS_Store
+src/*.o
+src/exactextract/*.o
+src/*.so
+src/*.dll
+.quarto
