@@ -1,12 +1,8 @@
 // scanline_burn.cpp — scanline polygon rasterization with exact coverage fractions
 //
-// This is the "controlledburn" algorithm from the denseburn-refactor design:
-// reuse exactextract's Cell class for exact boundary cell coverage fractions,
-// but replace the flood fill with a scanline winding-number sweep for interior
-// classification. Memory usage is O(perimeter), not O(bounding-box area).
-//
-// The output is identical to gridburn's cpp_burn_sparse: two tables of
-// (runs, edges) in sparse format.
+// Item 2 rewrite: lightweight walk using Box operations directly, analytical
+// coverage for single-traversal cells, left_hand_area fallback for
+// multi-traversal cells. No Cell class allocation for the common case.
 //
 // Copyright (c) 2025 Michael Sumner
 // Licensed under Apache License 2.0
@@ -25,15 +21,18 @@
 
 #include "libgeos.h"
 #include "dense_to_sparse.h"
+#include "analytical_coverage.h"
 
-#include "exactextract/cell.h"
 #include "exactextract/grid.h"
 #include "exactextract/box.h"
 #include "exactextract/geos_utils.h"
 #include "exactextract/coordinate.h"
 #include "exactextract/side.h"
+#include "exactextract/crossing.h"
+#include "exactextract/traversal_areas.h"
+#include "exactextract/measures.h"
 
-// ---- GEOS context management (same as gridburn.cpp) ----
+// ---- GEOS context management ----
 
 static void sl_geos_notice_handler(const char* /*fmt*/, ...) {}
 static void sl_geos_error_handler(const char* fmt, ...) {
@@ -74,236 +73,299 @@ private:
     GEOSGeometry* g_;
 };
 
-// ---- Per-cell boundary data for the scanline sweep ----
+// ---- Lightweight traversal tracking ----
+
+using exactextract::Coordinate;
+using exactextract::Side;
+using exactextract::Box;
+using exactextract::Crossing;
+
+struct LightTraversal {
+    std::vector<Coordinate> coords;   // entry → intermediates → exit
+    Side entry_side = Side::NONE;
+    Side exit_side = Side::NONE;
+
+    bool traversed() const {
+        return entry_side != Side::NONE && exit_side != Side::NONE;
+    }
+
+    bool is_closed_ring() const {
+        return coords.size() >= 3 &&
+               coords.front() == coords.back();
+    }
+
+    bool multiple_unique_coordinates() const {
+        for (size_t i = 1; i < coords.size(); i++) {
+            if (coords[0] != coords[i]) return true;
+        }
+        return false;
+    }
+};
+
+// Per-cell traversal data, keyed by (row, col) in the infinite_extent grid
+struct CellRecord {
+    Box box;
+    std::vector<LightTraversal> traversals;
+
+    CellRecord() : box(0, 0, 0, 0) {}
+    explicit CellRecord(const Box& b) : box(b) {}
+};
+
+// Point classification relative to a box
+enum class Location { INSIDE, BOUNDARY, OUTSIDE };
+
+static inline Location point_location(const Box& box, const Coordinate& c) {
+    if (box.strictly_contains(c)) return Location::INSIDE;
+    if (box.contains(c)) return Location::BOUNDARY;
+    return Location::OUTSIDE;
+}
+
+// ---- Per-cell boundary data for the winding sweep ----
 
 struct BoundaryCellRecord {
     int col;               // 0-based column in full grid
-    float coverage;        // accumulated coverage fraction (signed: +exterior, -hole)
+    float coverage;        // accumulated coverage fraction (signed)
     int winding_delta;     // accumulated winding contribution
 };
 
 // ---- Scanline algorithm ----
 
-// Walk a polygon ring through grid cells, collecting boundary cell data.
-//
-// This reuses the same Cell-based walk as exactextract's process_line, but
-// instead of writing to a dense matrix, we record boundary cell coverage
-// and winding crossings into per-row vectors.
-//
-// coords: ring vertices (will be normalised to CCW internally)
-// is_ccw: whether the original ring is counter-clockwise
-// is_exterior: true for exterior ring, false for hole
-// grid: the infinite_extent grid for cell lookups
-// full_grid: the bounded_extent grid for row/col mapping
-// dy: cell height
-// row_data: output — per-row vectors of boundary cell records (indexed by subgrid row)
-// sub_rows, sub_cols: dimensions of the subgrid (geometry bbox within full grid)
-// row_off, col_off: offset of subgrid in full grid
 static void walk_ring(
-    std::vector<exactextract::Coordinate> coords,
+    std::vector<Coordinate> coords,
     bool is_ccw,
     bool is_exterior,
     const exactextract::Grid<exactextract::infinite_extent>& grid,
-    double dy,
+    double /* dy (unused, kept for signature compat) */,
     std::vector<std::vector<BoundaryCellRecord>>& row_data,
     size_t sub_rows,
     size_t sub_cols,
     size_t row_off,
     size_t col_off
 ) {
-    using namespace exactextract;
+    if (coords.size() < 4) return;
 
-    if (coords.size() < 4) return; // degenerate ring
-
-    // Normalise to CCW for correct Cell coverage fractions
+    // Normalise to CCW for correct coverage fraction semantics
     if (!is_ccw) {
         std::reverse(coords.begin(), coords.end());
     }
 
-    // The sign factor: exterior rings contribute positively, holes negatively
-    // (same as exactextract's add_ring_results)
     float coverage_factor = is_exterior ? 1.0f : -1.0f;
-    // Winding factor: for CCW exterior rings, winding is standard (+1 up, -1 down).
-    // For CW holes that we reversed to CCW, we negate the winding.
     int winding_factor = is_exterior ? 1 : -1;
 
-    // Lazy Cell allocation: map from (row, col) in subgrid coords to Cell
-    // (subgrid row/col are 1-based in the infinite_extent grid, but we use
-    // the infinite_extent grid's row/col directly)
-    std::map<std::pair<size_t, size_t>, std::unique_ptr<Cell>> cells;
+    // Per-cell traversal data (keyed by grid row/col in infinite_extent grid)
+    using CellKey = std::pair<size_t, size_t>;
+    std::map<CellKey, CellRecord> cells;
 
-    auto get_cell = [&](size_t r, size_t c) -> Cell* {
+    auto get_or_create = [&](size_t r, size_t c) -> CellRecord& {
         auto key = std::make_pair(r, c);
         auto it = cells.find(key);
         if (it == cells.end()) {
-            auto box = grid_cell(grid, r, c);
-            auto result = cells.emplace(key, std::make_unique<Cell>(box));
-            return result.first->second.get();
+            Box box = grid_cell(grid, r, c);
+            auto result = cells.emplace(key, CellRecord(box));
+            return result.first->second;
         }
-        return it->second.get();
+        return it->second;
     };
 
-    // ---- Walk boundary through cells ----
-    // This replicates the core loop from raster_cell_intersection.cpp process_line
+    // ---- Lightweight walk (replaces Cell-based walk) ----
+    //
+    // This replicates the core loop from raster_cell_intersection.cpp::process_line
+    // using Box::crossing() directly instead of Cell::take().
 
     size_t pos = 0;
     size_t row = grid.get_row(coords.front().y);
     size_t col = grid.get_column(coords.front().x);
+
+    // Storage for interpolated exit coordinate (persists across cell transitions)
+    Coordinate exit_coord_buf(0, 0);
     const Coordinate* last_exit = nullptr;
 
-    // Track traversal entry/exit for winding calculation.
-    // We record one entry per cell visit (one traversal).
-    struct TraversalWinding {
-        size_t row;
-        size_t col;
-        double entry_y;
-        double exit_y;
-    };
-    std::vector<TraversalWinding> traversal_windings;
-
     while (pos < coords.size()) {
-        Cell& cell = *get_cell(row, col);
+        CellRecord& cr = get_or_create(row, col);
+        const Box& box = cr.box;
+
+        // Start a new traversal for this cell visit
+        LightTraversal trav;
 
         while (pos < coords.size()) {
-            const Coordinate* next_coord = last_exit ? last_exit : &coords[pos];
-            const Coordinate* prev_coord = pos > 0 ? &coords[pos - 1] : nullptr;
+            const Coordinate* next = last_exit ? last_exit : &coords[pos];
+            const Coordinate* prev_original = pos > 0 ? &coords[pos - 1] : nullptr;
 
-            cell.take(*next_coord, prev_coord);
+            if (trav.coords.empty()) {
+                // First coordinate for this traversal — enter the cell
+                trav.entry_side = box.side(*next);
+                trav.coords.push_back(*next);
+                if (last_exit) { last_exit = nullptr; } else { pos++; }
+                continue;
+            }
 
-            if (cell.last_traversal().exited()) {
-                const Coordinate& exc = cell.last_traversal().exit_coordinate();
-                if (exc != *next_coord) {
-                    last_exit = &exc;
+            Location loc = point_location(box, *next);
+
+            if (loc != Location::OUTSIDE) {
+                // Inside or on boundary — add to traversal
+                trav.coords.push_back(*next);
+                if (last_exit) { last_exit = nullptr; } else { pos++; }
+            } else {
+                // Outside — compute exit crossing using Box::crossing()
+                // Use prev_original for robustness (same as Cell::take)
+                Crossing x = prev_original ?
+                    box.crossing(*prev_original, *next) :
+                    box.crossing(trav.coords.back(), *next);
+
+                trav.coords.push_back(x.coord());
+                trav.exit_side = x.side();
+
+                // If exit coord differs from the target coord, use it as
+                // the entry point for the next cell
+                if (x.coord() != *next) {
+                    exit_coord_buf = x.coord();
+                    last_exit = &exit_coord_buf;
                 }
                 break;
-            } else {
-                if (last_exit) {
-                    last_exit = nullptr;
-                } else {
-                    pos++;
-                }
             }
         }
 
-        cell.force_exit();
-
-        if (cell.last_traversal().exited()) {
-            // Record traversal for winding: get entry/exit y from the Traversal itself
-            const auto& trav = cell.last_traversal();
-            if (trav.traversed() && trav.coords().size() >= 2) {
-                double t_entry_y = trav.coords().front().y;
-                double t_exit_y  = trav.exit_coordinate().y;
-                traversal_windings.push_back({row, col, t_entry_y, t_exit_y});
+        // Force exit if stuck on boundary (same as Cell::force_exit)
+        if (trav.exit_side == Side::NONE && !trav.coords.empty()) {
+            const Coordinate& last = trav.coords.back();
+            if (point_location(box, last) == Location::BOUNDARY) {
+                trav.exit_side = box.side(last);
             }
+        }
 
-            // Handle incomplete initial traversal (polygon start not on cell boundary)
-            if (!cell.last_traversal().traversed()) {
-                for (const auto& coord : cell.last_traversal().coords()) {
-                    coords.push_back(coord);
-                }
+        bool exited = (trav.exit_side != Side::NONE);
+        bool incomplete = exited && (trav.entry_side == Side::NONE);
+
+        // Handle incomplete initial traversal: polygon started inside this cell,
+        // ring hasn't closed yet. Push coords to end for reprocessing.
+        if (incomplete) {
+            for (const auto& c : trav.coords) {
+                coords.push_back(c);
             }
+        }
 
-            // Move to next cell based on exit side
-            switch (cell.last_traversal().exit_side()) {
+        // Store the traversal (even incomplete ones, they'll be filtered later)
+        cr.traversals.push_back(std::move(trav));
+
+        // Move to next cell based on exit side
+        if (exited) {
+            Side exit_s = cr.traversals.back().exit_side;
+            switch (exit_s) {
                 case Side::TOP:    row--; break;
                 case Side::BOTTOM: row++; break;
                 case Side::LEFT:   col--; break;
                 case Side::RIGHT:  col++; break;
-                default: throw std::runtime_error("Invalid traversal exit side");
+                default: break;
             }
         }
     }
 
-    // ---- Extract coverage fractions and compute winding ----
+    // ---- Compute coverage fractions and winding ----
 
-    // For each cell that was visited, get coverage fraction
     for (auto& kv : cells) {
         size_t r = kv.first.first;
         size_t c = kv.first.second;
-
-        float frac = static_cast<float>(kv.second->covered_fraction());
-        if (frac == 0.0f) continue; // edge barely touched this cell
+        CellRecord& cr = kv.second;
 
         // Map from infinite_extent grid coords to subgrid coords
-        // In infinite_extent grid, the actual data starts at row=1, col=1
-        // (padding=1 on each side)
         if (r < 1 || c < 1) continue;
         size_t sub_r = r - 1;
         size_t sub_c = c - 1;
         if (sub_r >= sub_rows || sub_c >= sub_cols) continue;
+        int full_col = static_cast<int>(col_off + sub_c);
 
-        // Find or create entry in row_data
+        // Filter to valid traversals (proper enter + exit, or closed ring)
+        std::vector<LightTraversal*> valid;
+        for (auto& t : cr.traversals) {
+            if (t.traversed() && t.multiple_unique_coordinates()) {
+                valid.push_back(&t);
+            } else if (t.entry_side == Side::NONE && t.is_closed_ring()) {
+                // Closed ring entirely within this cell
+                valid.push_back(&t);
+            }
+        }
+
+        if (valid.empty()) continue;
+
+        // ---- Coverage fraction ----
+        float frac = 0.0f;
+
+        if (valid.size() == 1) {
+            LightTraversal* t = valid[0];
+
+            if (t->entry_side == Side::NONE && t->is_closed_ring()) {
+                // Small polygon entirely within one cell
+                frac = static_cast<float>(
+                    denseburn::closed_ring_covered_fraction(cr.box, t->coords));
+            } else {
+                // Single traversal — analytical fast path
+                frac = static_cast<float>(
+                    denseburn::analytical_covered_fraction(
+                        cr.box, t->coords, t->entry_side, t->exit_side));
+            }
+        } else {
+            // Multiple traversals — use left_hand_area (same as Cell::covered_fraction)
+            std::vector<const std::vector<Coordinate>*> coord_lists;
+            for (auto* t : valid) {
+                coord_lists.push_back(&t->coords);
+            }
+            double cell_area = cr.box.area();
+            if (cell_area > 0.0) {
+                frac = static_cast<float>(
+                    exactextract::left_hand_area(cr.box, coord_lists) / cell_area);
+            }
+        }
+
+        if (frac == 0.0f) continue;
+
+        // Store coverage in row_data
         auto& row_vec = row_data[sub_r];
-        // Look for existing entry for this column
         bool found = false;
         for (auto& rec : row_vec) {
-            if (rec.col == static_cast<int>(col_off + sub_c)) {
+            if (rec.col == full_col) {
                 rec.coverage += coverage_factor * frac;
                 found = true;
                 break;
             }
         }
         if (!found) {
-            row_vec.push_back({static_cast<int>(col_off + sub_c), coverage_factor * frac, 0});
+            row_vec.push_back({full_col, coverage_factor * frac, 0});
         }
-    }
 
-    // Compute winding deltas from traversal records
-    for (auto& tw : traversal_windings) {
-        size_t r = tw.row;
-        size_t c = tw.col;
+        // ---- Winding deltas from traversals ----
+        for (auto* t : valid) {
+            if (!t->traversed()) continue; // closed rings don't contribute winding
+            if (t->coords.size() < 2) continue;
 
-        if (r < 1 || c < 1) continue;
-        size_t sub_r = r - 1;
-        size_t sub_c = c - 1;
-        if (sub_r >= sub_rows || sub_c >= sub_cols) continue;
+            double entry_y = t->coords.front().y;
+            double exit_y  = t->coords.back().y;
+            double y_mid = (cr.box.ymin + cr.box.ymax) / 2.0;
 
-        // Row center y-coordinate
-        // In the grid, row 0 (of the infinite_extent grid) is above ymax
-        // Row 1 is the first actual row, its ymax = grid.ymax() - (but with padding offset)
-        Box cell_box = grid_cell(grid, tw.row, tw.col);
-        double y_mid = (cell_box.ymin + cell_box.ymax) / 2.0;
+            bool crosses = (entry_y > y_mid && exit_y < y_mid) ||
+                           (entry_y < y_mid && exit_y > y_mid);
+            if (!crosses) continue;
 
-        // Does this traversal cross the row center?
-        bool crosses = (tw.entry_y > y_mid && tw.exit_y < y_mid) ||
-                       (tw.entry_y < y_mid && tw.exit_y > y_mid);
+            int delta = (entry_y > y_mid) ? -1 : +1; // downward = -1, upward = +1
+            delta *= winding_factor;
 
-        if (!crosses) continue;
-
-        // Direction: going downward (entry above mid, exit below) or upward?
-        // For a CCW exterior ring:
-        //   downward crossing → winding -1 (leaving interior on left)
-        //   upward crossing   → winding +1 (entering interior on left)
-        int delta;
-        if (tw.entry_y > y_mid) {
-            // Going downward
-            delta = -1;
-        } else {
-            // Going upward
-            delta = +1;
-        }
-        delta *= winding_factor;
-
-        // Add winding delta to the corresponding row_data entry
-        int full_col = static_cast<int>(col_off + sub_c);
-        auto& row_vec = row_data[sub_r];
-        bool found = false;
-        for (auto& rec : row_vec) {
-            if (rec.col == full_col) {
-                rec.winding_delta += delta;
-                found = true;
-                break;
+            found = false;
+            for (auto& rec : row_vec) {
+                if (rec.col == full_col) {
+                    rec.winding_delta += delta;
+                    found = true;
+                    break;
+                }
             }
-        }
-        if (!found) {
-            // Coverage was zero but there's a winding crossing — this can happen
-            // when an edge barely clips a cell corner
-            row_vec.push_back({full_col, 0.0f, delta});
+            if (!found) {
+                row_vec.push_back({full_col, 0.0f, delta});
+            }
         }
     }
 }
 
-// Process a single GEOS geometry (polygon, multipolygon, etc)
+
+// ---- Process geometry (unchanged from Item 1) ----
+
 static void process_geometry(
     GEOSContextHandle_t ctx,
     const GEOSGeometry* g,
@@ -325,12 +387,8 @@ static void process_geometry(
         return;
     }
 
-    if (type != GEOS_POLYGON) {
-        // For now, only handle polygons
-        return;
-    }
+    if (type != GEOS_POLYGON) return;
 
-    // Get geometry bounding box
     auto component_boxes = geos_get_component_boxes(ctx, g);
     Box region = Box::make_empty();
     for (const auto& box : component_boxes) {
@@ -344,25 +402,21 @@ static void process_geometry(
     }
     if (region.empty()) return;
 
-    // Create subgrid with padding (infinite_extent)
     auto subgrid_bounded = full_grid.shrink_to_fit(region);
     auto subgrid = make_infinite(subgrid_bounded);
-
     if (subgrid.empty()) return;
 
-    size_t sub_rows = subgrid.rows() - 2; // minus padding
+    size_t sub_rows = subgrid.rows() - 2;
     size_t sub_cols = subgrid.cols() - 2;
 
-    // Compute offset of subgrid within full raster grid
     size_t row_off = static_cast<size_t>(
         std::round((full_grid.ymax() - subgrid_bounded.ymax()) / dy));
     size_t col_off = static_cast<size_t>(
         std::round((subgrid_bounded.xmin() - full_grid.xmin()) / dx));
 
-    // Per-row boundary cell data (indexed by subgrid row)
     std::vector<std::vector<BoundaryCellRecord>> row_data(sub_rows);
 
-    // Process exterior ring
+    // Exterior ring
     {
         const GEOSGeometry* ring = GEOSGetExteriorRing_r(ctx, g);
         const GEOSCoordSequence* seq = GEOSGeom_getCoordSeq_r(ctx, ring);
@@ -373,7 +427,7 @@ static void process_geometry(
                   row_data, sub_rows, sub_cols, row_off, col_off);
     }
 
-    // Process holes
+    // Holes
     int n_holes = GEOSGetNumInteriorRings_r(ctx, g);
     for (int h = 0; h < n_holes; h++) {
         const GEOSGeometry* ring = GEOSGetInteriorRingN_r(ctx, g, h);
@@ -393,13 +447,12 @@ static void process_geometry(
         auto& row_vec = row_data[sr];
         if (row_vec.empty()) continue;
 
-        // Sort by column
         std::sort(row_vec.begin(), row_vec.end(),
             [](const BoundaryCellRecord& a, const BoundaryCellRecord& b) {
                 return a.col < b.col;
             });
 
-        // Merge entries for the same column (can happen with multi-ring cells)
+        // Merge same-column entries
         std::vector<BoundaryCellRecord> merged;
         for (auto& rec : row_vec) {
             if (!merged.empty() && merged.back().col == rec.col) {
@@ -410,42 +463,30 @@ static void process_geometry(
             }
         }
 
-        // Sweep left to right with winding count
         int winding = 0;
-        int prev_col = -2; // sentinel
-
-        int full_row = static_cast<int>(row_off + sr) + 1; // 1-based
+        int prev_col = -2;
+        int full_row = static_cast<int>(row_off + sr) + 1;
 
         for (auto& mc : merged) {
-            // Emit interior run between previous boundary cell and this one
             if (winding != 0 && prev_col >= 0 && mc.col > prev_col + 1) {
                 all_runs.push_back({
                     full_row,
-                    prev_col + 1 + 1,   // 1-based, column after previous boundary
-                    mc.col - 1 + 1,     // 1-based, column before this boundary
+                    prev_col + 1 + 1,
+                    mc.col - 1 + 1,
                     poly_id
                 });
             }
 
-            // Emit boundary cell
             float w = mc.coverage;
             if (w > tol && w < (1.0f - tol)) {
-                // Partial coverage — emit as edge
                 all_edges.push_back({full_row, mc.col + 1, w, poly_id});
             } else if (w >= (1.0f - tol)) {
-                // Fully covered boundary cell — emit as single-cell run
                 all_runs.push_back({full_row, mc.col + 1, mc.col + 1, poly_id});
             }
-            // else: w <= tol means effectively outside, don't emit
-            // (but still update winding below, since the edge still crosses)
 
-            // Update winding count AFTER processing this cell
             winding += mc.winding_delta;
             prev_col = mc.col;
         }
-
-        // Winding should return to 0 after all crossings on a row for a valid polygon
-        // (don't enforce, just note if it's wrong)
     }
 }
 
@@ -500,7 +541,7 @@ cpp11::writable::list cpp_scanline_burn(
         if (GEOSisEmpty_r(ctx, geom.get())) continue;
 
         try {
-            int poly_id = k + 1; // 1-based
+            int poly_id = k + 1;
             process_geometry(ctx, geom.get(), full_grid, dx, dy,
                              poly_id, all_runs, all_edges);
         } catch (const std::exception& e) {
@@ -511,7 +552,7 @@ cpp11::writable::list cpp_scanline_burn(
 
     GEOSWKBReader_destroy_r(ctx, wkb_reader);
 
-    // Build R data.frames (same format as cpp_burn_sparse)
+    // Build R data.frames
     size_t n_runs = all_runs.size();
     cpp11::writable::integers runs_row(n_runs);
     cpp11::writable::integers runs_col_start(n_runs);

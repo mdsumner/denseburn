@@ -22,10 +22,29 @@ Forked from gridburn as the development home for the scanline refactor.
   `matrix.h`, or `raster.h` — these are only needed by the original
   `burn_sparse()` path.
 
-## Roadmap (in this repo)
+## Item 2: Analytical single-edge coverage
 
-* Item 2: Analytical single-edge coverage (bypass Cell class for common case)
-* Item 3: Benchmark perimeter-proportional scaling vs tiled dense approach
+* Rewrote `scanline_burn.cpp` with lightweight walk — no Cell class allocation.
+* `LightTraversal` struct tracks entry/exit coordinates and sides directly.
+* `analytical_coverage.h`: for single-traversal cells (~90% of boundary),
+  coverage fraction computed as a simple closed polygon (traversal path + CCW
+  cell boundary corners from exit to entry) via shoelace formula. No heap
+  allocation, no chain-chasing.
+* Multi-traversal cells fall back to `left_hand_area()` from exactextract.
+* `Box::crossing()` used directly for cell exit computation instead of
+  `Cell::take()`.
+* Validated against `burn_sparse()` — identical output.
+
+## Item 3: Benchmark perimeter-proportional scaling
+
+* `inst/docs-design/denseburn-refactor/benchmark-scaling.R`: scaling benchmark
+  across grid resolutions (50–1600) for five geometry types (square, sliver,
+  star, donut, jagged coastline). Measures log2 time ratios between resolution
+  doublings — scanline should show ~1.0 (O(n)), sparse should show ~2.0
+  (O(n²)).
+
+## Roadmap (remaining)
+
 * Item 4: Multi-polygon shared-boundary handling
 * Item 5: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
 * Final: migrate to controlledburn as the production home
