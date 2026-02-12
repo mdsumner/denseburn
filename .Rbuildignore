@@ -2,3 +2,8 @@
 ^\.Rproj\.user$
 ^CODE_OF_CONDUCT\.md$
 ^README\.Rmd$
+^denseburn\.Rproj$
+^src/\.o$
+^src/\.so$
+^src/exactextract/.*\.o$
+
