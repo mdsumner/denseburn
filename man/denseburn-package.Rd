@@ -6,7 +6,7 @@
 \alias{denseburn-package}
 \title{denseburn: Sparse Polygon Rasterization with Exact Coverage Fractions}
 \description{
-Computes exact coverage fractions for polygon-grid intersections and returns results in a sparse two-table format: run-length encoded interior cells and individually weighted boundary cells. Uses the exactextract algorithm by Daniel Baston, vendored from the 'exactextractr' package.
+Computes exact coverage fractions for polygon-grid intersections and returns results in a sparse two-table format: run-length encoded interior cells and individually weighted boundary cells. Evolving from the dense-matrix approach (gridburn) toward a pure scanline sweep that is O(perimeter) in memory. Uses the exactextract algorithm by Daniel Baston, vendored from the 'exactextractr' package.
 }
 \seealso{
 Useful links:

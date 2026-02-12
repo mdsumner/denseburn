@@ -4,7 +4,13 @@
 \alias{burn_sparse}
 \title{Sparse polygon rasterization with exact coverage fractions}
 \usage{
-burn_sparse(x, extent, dimension, tile_size = 4096L)
+burn_sparse(
+  x,
+  extent = NULL,
+  dimension = NULL,
+  resolution = NULL,
+  tile_size = 4096L
+)
 }
 \arguments{
 \item{x}{geometry input, one of:
@@ -14,9 +20,16 @@ burn_sparse(x, extent, dimension, tile_size = 4096L)
 \item a list of raw vectors containing WKB
 }}
 
-\item{extent}{numeric vector \code{c(xmin, xmax, ymin, ymax)} defining the raster extent}
+\item{extent}{numeric vector \code{c(xmin, xmax, ymin, ymax)} defining the raster
+extent. If \code{NULL} (default), derived from the bounding box of \code{x}.}
 
-\item{dimension}{integer vector \code{c(ncol, nrow)} defining the grid dimensions}
+\item{dimension}{integer vector \code{c(ncol, nrow)} defining the grid dimensions.
+If \code{NULL} (default), fitted to the extent with at most 256 cells along the
+longer axis, preserving aspect ratio. Mutually exclusive with \code{resolution}.}
+
+\item{resolution}{numeric, cell size (scalar for square cells, or
+\code{c(dx, dy)}). If supplied, \code{dimension} is computed from \code{extent / resolution}.
+Mutually exclusive with \code{dimension}.}
 
 \item{tile_size}{integer, maximum tile dimension (default 4096). The grid is
 processed in tiles of at most \verb{tile_size x tile_size} cells to bound memory
@@ -29,8 +42,8 @@ A list with class \code{"denseburn"} containing:
 run-length encoded interior cells (coverage fraction ≈ 1.0)}
 \item{\code{edges}}{data.frame with columns \code{row}, \code{col}, \code{weight}, \code{id} —
 boundary cells with partial coverage (0 < weight < 1)}
-\item{\code{extent}}{the raster extent as supplied}
-\item{\code{dimension}}{the grid dimensions as supplied}
+\item{\code{extent}}{the raster extent}
+\item{\code{dimension}}{the grid dimensions}
 }
 
 Row and column indices are 1-based. Row 1 is the top (ymax) row.
@@ -45,8 +58,14 @@ individually weighted boundary cells.
 if (requireNamespace("geos", quietly = TRUE)) {
   library(geos)
   poly <- as_geos_geometry("POLYGON ((0.5 0.5, 2.5 0.5, 2.5 2.5, 0.5 2.5, 0.5 0.5))")
+
+  # Explicit extent and dimension
   result <- burn_sparse(poly, extent = c(0, 3, 0, 3), dimension = c(3, 3))
-  result$runs
-  result$edges
+
+  # Defaults: extent from bbox, 256-cell fitted grid
+  result <- burn_sparse(poly)
+
+  # Specify resolution (cell size)
+  result <- burn_sparse(poly, resolution = 0.1)
 }
 }

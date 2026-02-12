@@ -4,7 +4,7 @@
 \alias{burn_scanline}
 \title{Scanline polygon rasterization with exact coverage fractions}
 \usage{
-burn_scanline(x, extent, dimension)
+burn_scanline(x, extent = NULL, dimension = NULL, resolution = NULL)
 }
 \arguments{
 \item{x}{geometry input, one of:
@@ -14,17 +14,24 @@ burn_scanline(x, extent, dimension)
 \item a list of raw vectors containing WKB
 }}
 
-\item{extent}{numeric vector \code{c(xmin, xmax, ymin, ymax)} defining the raster extent}
+\item{extent}{numeric vector \code{c(xmin, xmax, ymin, ymax)} defining the raster
+extent. If \code{NULL} (default), derived from the bounding box of \code{x}.}
 
-\item{dimension}{integer vector \code{c(ncol, nrow)} defining the grid dimensions}
+\item{dimension}{integer vector \code{c(ncol, nrow)} defining the grid dimensions.
+If \code{NULL} (default), fitted to the extent with at most 256 cells along the
+longer axis, preserving aspect ratio. Mutually exclusive with \code{resolution}.}
+
+\item{resolution}{numeric, cell size (scalar for square cells, or
+\code{c(dx, dy)}). If supplied, \code{dimension} is computed from \code{extent / resolution}.
+Mutually exclusive with \code{dimension}.}
 }
 \value{
 A list with class \code{"denseburn"} containing:
 \describe{
 \item{\code{runs}}{data.frame with columns \code{row}, \code{col_start}, \code{col_end}, \code{id}}
 \item{\code{edges}}{data.frame with columns \code{row}, \code{col}, \code{weight}, \code{id}}
-\item{\code{extent}}{the raster extent as supplied}
-\item{\code{dimension}}{the grid dimensions as supplied}
+\item{\code{extent}}{the raster extent}
+\item{\code{dimension}}{the grid dimensions}
 }
 }
 \description{
@@ -37,8 +44,14 @@ Memory usage is O(perimeter) rather than O(bounding-box area).
 if (requireNamespace("geos", quietly = TRUE)) {
   library(geos)
   poly <- as_geos_geometry("POLYGON ((0.5 0.5, 2.5 0.5, 2.5 2.5, 0.5 2.5, 0.5 0.5))")
+
+  # Defaults: extent from bbox, 256-cell fitted grid
+  result <- burn_scanline(poly)
+
+  # Explicit
   result <- burn_scanline(poly, extent = c(0, 3, 0, 3), dimension = c(3, 3))
-  result$runs
-  result$edges
+
+  # By resolution
+  result <- burn_scanline(poly, resolution = 0.01)
 }
 }

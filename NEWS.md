@@ -69,8 +69,20 @@ Forked from gridburn as the development home for the scanline refactor.
 * Edge count scaling confirms linear boundary growth: star/jagged median
   ≈ 1.0, axis-aligned shapes have zero edges (all boundaries on grid lines).
 
+## Item 5: Multi-polygon shared-boundary validation
+
+* `inst/docs-design/denseburn-refactor/validate-shared-boundary.R`:
+  comprehensive test suite for coverage complementarity at shared boundaries.
+* Verified that adjacent polygons produce coverage fractions summing to
+  exactly 1.0 at every shared cell (18/18 tests pass).
+* Test cases: vertical/horizontal shared edges (on-grid and off-grid),
+  four quadrants meeting at a point, diagonal shared edges (two triangles
+  forming a square), irregular tilings (L-shape + complement), donut with
+  inner fill, high-res diagonal (100×100), and NC counties (real data).
+* No code changes needed: `Box::crossing()` is deterministic for coincident
+  edges, so independent per-polygon walks produce complementary fractions.
+
 ## Roadmap (remaining)
 
-* Item 5: Multi-polygon shared-boundary handling
 * Item 6: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
 * Final: migrate to controlledburn as the production home
