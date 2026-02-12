@@ -240,23 +240,28 @@ as_wkb_list <- function(x) {
 as_wkb_list.list <- function(x) {
   # Assume already a list of raw vectors (WKB)
   stopifnot(all(vapply(x, is.raw, logical(1))))
+  wk::wkb(x)
+}
+
+#' @export
+as_wkb_list.blob <- function(x) {
+  wk::wkb(x)
+}
+
+#' @export
+as_wkb_list.wk_wkb <- function(x) {
+  # Already wk_wkb — passthrough
   x
 }
 
 #' @export
 as_wkb_list.sfc <- function(x) {
-  # sf geometry column → WKB via sf::st_as_binary
-  if (!requireNamespace("sf", quietly = TRUE)) {
-    stop("Package 'sf' is required to convert sfc objects", call. = FALSE)
-  }
-  sf::st_as_binary(x)
+  # sf geometry column → WKB via wk
+  wk::as_wkb(x)
 }
 
 #' @export
 as_wkb_list.geos_geometry <- function(x) {
-  # geos geometry → WKB via geos::geos_write_wkb
-  if (!requireNamespace("geos", quietly = TRUE)) {
-    stop("Package 'geos' is required to convert geos_geometry objects", call. = FALSE)
-  }
-  geos::geos_write_wkb(x)
+  # geos geometry → WKB via wk
+  wk::as_wkb(x)
 }
