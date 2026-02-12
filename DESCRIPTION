@@ -24,7 +24,8 @@ LinkingTo:
     libgeos
 Imports:
     cpp11,
-    libgeos
+    libgeos,
+    wk
 Suggests:
     geos,
     sf,

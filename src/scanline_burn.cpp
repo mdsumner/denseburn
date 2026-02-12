@@ -1,8 +1,9 @@
 // scanline_burn.cpp — scanline polygon rasterization with exact coverage fractions
 //
-// Item 2 rewrite: lightweight walk using Box operations directly, analytical
-// coverage for single-traversal cells, left_hand_area fallback for
-// multi-traversal cells. No Cell class allocation for the common case.
+// Item 2: lightweight walk using Box::crossing() directly instead of
+// Cell::take(). No Cell class allocation. Coverage via left_hand_area
+// (same as Cell::covered_fraction) with shoelace shortcut for closed
+// rings within a single cell.
 //
 // Copyright (c) 2025 Michael Sumner
 // Licensed under Apache License 2.0
@@ -290,21 +291,14 @@ static void walk_ring(
         // ---- Coverage fraction ----
         float frac = 0.0f;
 
-        if (valid.size() == 1) {
-            LightTraversal* t = valid[0];
-
-            if (t->entry_side == Side::NONE && t->is_closed_ring()) {
-                // Small polygon entirely within one cell
-                frac = static_cast<float>(
-                    denseburn::closed_ring_covered_fraction(cr.box, t->coords));
-            } else {
-                // Single traversal — analytical fast path
-                frac = static_cast<float>(
-                    denseburn::analytical_covered_fraction(
-                        cr.box, t->coords, t->entry_side, t->exit_side));
-            }
+        if (valid.size() == 1 && valid[0]->entry_side == Side::NONE
+            && valid[0]->is_closed_ring()) {
+            // Small polygon entirely within one cell — shoelace area
+            frac = static_cast<float>(
+                denseburn::closed_ring_covered_fraction(cr.box, valid[0]->coords));
         } else {
-            // Multiple traversals — use left_hand_area (same as Cell::covered_fraction)
+            // Use left_hand_area for all traversals (single or multiple).
+            // This is the same algorithm as Cell::covered_fraction.
             std::vector<const std::vector<Coordinate>*> coord_lists;
             for (auto* t : valid) {
                 coord_lists.push_back(&t->coords);
@@ -316,23 +310,30 @@ static void walk_ring(
             }
         }
 
-        if (frac == 0.0f) continue;
+        // ---- Store coverage (if nonzero) and winding deltas ----
+        //
+        // IMPORTANT: winding deltas must be stored even when coverage is zero.
+        // A traversal along a cell wall (e.g. vertical edge on a grid line)
+        // has zero area but still crosses the row center, contributing to the
+        // winding count that classifies interior cells.
 
-        // Store coverage in row_data
         auto& row_vec = row_data[sub_r];
-        bool found = false;
-        for (auto& rec : row_vec) {
-            if (rec.col == full_col) {
-                rec.coverage += coverage_factor * frac;
-                found = true;
-                break;
+
+        // Helper: find or create the BoundaryCellRecord for this column
+        auto find_or_create = [&]() -> BoundaryCellRecord& {
+            for (auto& rec : row_vec) {
+                if (rec.col == full_col) return rec;
             }
-        }
-        if (!found) {
-            row_vec.push_back({full_col, coverage_factor * frac, 0});
+            row_vec.push_back({full_col, 0.0f, 0});
+            return row_vec.back();
+        };
+
+        if (frac != 0.0f) {
+            BoundaryCellRecord& rec = find_or_create();
+            rec.coverage += coverage_factor * frac;
         }
 
-        // ---- Winding deltas from traversals ----
+        // Winding deltas from traversals
         for (auto* t : valid) {
             if (!t->traversed()) continue; // closed rings don't contribute winding
             if (t->coords.size() < 2) continue;
@@ -348,17 +349,8 @@ static void walk_ring(
             int delta = (entry_y > y_mid) ? -1 : +1; // downward = -1, upward = +1
             delta *= winding_factor;
 
-            found = false;
-            for (auto& rec : row_vec) {
-                if (rec.col == full_col) {
-                    rec.winding_delta += delta;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                row_vec.push_back({full_col, 0.0f, delta});
-            }
+            BoundaryCellRecord& rec = find_or_create();
+            rec.winding_delta += delta;
         }
     }
 }

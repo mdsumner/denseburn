@@ -22,29 +22,28 @@ Forked from gridburn as the development home for the scanline refactor.
   `matrix.h`, or `raster.h` — these are only needed by the original
   `burn_sparse()` path.
 
-## Item 2: Analytical single-edge coverage
+## Item 2: Lightweight walk (no Cell class)
 
 * Rewrote `scanline_burn.cpp` with lightweight walk — no Cell class allocation.
 * `LightTraversal` struct tracks entry/exit coordinates and sides directly.
-* `analytical_coverage.h`: for single-traversal cells (~90% of boundary),
-  coverage fraction computed as a simple closed polygon (traversal path + CCW
-  cell boundary corners from exit to entry) via shoelace formula. No heap
-  allocation, no chain-chasing.
-* Multi-traversal cells fall back to `left_hand_area()` from exactextract.
 * `Box::crossing()` used directly for cell exit computation instead of
   `Cell::take()`.
-* Validated against `burn_sparse()` — identical output.
-
-## Item 3: Benchmark perimeter-proportional scaling
-
-* `inst/docs-design/denseburn-refactor/benchmark-scaling.R`: scaling benchmark
-  across grid resolutions (50–1600) for five geometry types (square, sliver,
-  star, donut, jagged coastline). Measures log2 time ratios between resolution
-  doublings — scanline should show ~1.0 (O(n)), sparse should show ~2.0
-  (O(n²)).
+* Coverage fractions computed via `left_hand_area()` (same algorithm as
+  `Cell::covered_fraction`), with a shoelace shortcut for closed rings
+  within a single cell.
+* Fixed bug where zero-area boundary traversals (edges along cell walls)
+  lost their winding information, causing missing interior cells for
+  concave polygons and axis-aligned edges.
+* The vendored `cell.h`, `cell.cpp`, `traversal.h`, `traversal.cpp` are
+  no longer used by `burn_scanline()` — only by the original `burn_sparse()`.
+* Validated against `burn_sparse()` — identical output (8/8 tests pass).
 
 ## Roadmap (remaining)
 
-* Item 4: Multi-polygon shared-boundary handling
-* Item 5: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
+* Item 3: Analytical single-edge coverage (bypass left_hand_area for
+  single-traversal cells — requires correct perimeter-distance logic to
+  select the right CCW corner walk direction)
+* Item 4: Benchmark perimeter-proportional scaling vs tiled dense approach
+* Item 5: Multi-polygon shared-boundary handling
+* Item 6: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
 * Final: migrate to controlledburn as the production home

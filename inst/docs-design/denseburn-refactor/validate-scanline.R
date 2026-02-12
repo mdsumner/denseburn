@@ -170,3 +170,36 @@ cat(sprintf("%d / %d tests passed\n", n_pass, n_total))
 if (n_pass < n_total) {
   cat("Failed tests:", paste(names(results)[!unlist(results)], collapse = ", "), "\n")
 }
+
+# ---- Default parameter tests ----
+cat("\n=== Default parameter tests ===\n")
+
+# bare minimum: just geometry
+cat("--- bare call (defaults) ---\n")
+r_default <- burn_scanline(poly1)
+cat(sprintf("  extent from bbox: [%.1f, %.1f, %.1f, %.1f]\n",
+            r_default$extent[1], r_default$extent[2],
+            r_default$extent[3], r_default$extent[4]))
+cat(sprintf("  dimension fitted: %d x %d\n",
+            r_default$dimension[1], r_default$dimension[2]))
+
+# resolution parameter
+cat("--- resolution = 0.1 ---\n")
+r_res <- burn_scanline(poly1, resolution = 0.1)
+cat(sprintf("  dimension: %d x %d (expect 20 x 20)\n",
+            r_res$dimension[1], r_res$dimension[2]))
+
+# resolution + explicit extent
+cat("--- resolution = 0.5 with explicit extent ---\n")
+r_res2 <- burn_scanline(poly1, extent = c(0, 10, 0, 5), resolution = 0.5)
+cat(sprintf("  dimension: %d x %d (expect 20 x 10)\n",
+            r_res2$dimension[1], r_res2$dimension[2]))
+
+# error on both dimension and resolution
+cat("--- dimension + resolution (should error) ---\n")
+tryCatch({
+  burn_scanline(poly1, dimension = c(10, 10), resolution = 0.1)
+  cat("  FAIL: no error raised\n")
+}, error = function(e) {
+  cat(sprintf("  OK: %s\n", e$message))
+})
