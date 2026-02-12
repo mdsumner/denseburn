@@ -1,8 +1,12 @@
 // scanline_burn.cpp — scanline polygon rasterization with exact coverage fractions
 //
-// Item 3: analytical coverage for single-traversal cells using
-// perimeter_distance to select correct CCW corner walk. Falls back to
-// left_hand_area for multi-traversal cells. No Cell class allocation.
+// Item 6: edge case fixes:
+// - Padding column winding: edges outside the grid (padding columns) now
+//   contribute winding deltas to grid rows, fixing beyond-extent polygons.
+// - Sweep start condition: prev_col > -2 allows runs after padding cells.
+// - Analytical single-traversal coverage via perimeter_distance (Item 3).
+// - No Cell class allocation (Item 2).
+// - MULTIPOLYGON components processed independently (each gets own sweep).
 //
 // Copyright (c) 2025 Michael Sumner
 // Licensed under Apache License 2.0
@@ -267,12 +271,32 @@ static void walk_ring(
         size_t c = kv.first.second;
         CellRecord& cr = kv.second;
 
-        // Map from infinite_extent grid coords to subgrid coords
-        if (r < 1 || c < 1) continue;
+        // Map from infinite_extent grid coords to subgrid coords.
+        // Skip padding ROWS — they don't affect any grid row's winding.
+        if (r < 1) continue;
         size_t sub_r = r - 1;
-        size_t sub_c = c - 1;
-        if (sub_r >= sub_rows || sub_c >= sub_cols) continue;
-        int full_col = static_cast<int>(col_off + sub_c);
+        if (sub_r >= sub_rows) continue;
+
+        // Determine column mapping.
+        // Padding COLUMNS still carry winding deltas for their grid row
+        // (e.g. a polygon edge entirely outside the grid but crossing rows).
+        bool in_grid_cols;
+        int full_col;
+        if (c < 1) {
+            // Left padding column — virtual column before grid
+            full_col = static_cast<int>(col_off) - 1;
+            in_grid_cols = false;
+        } else {
+            size_t sub_c = c - 1;
+            if (sub_c >= sub_cols) {
+                // Right padding column — virtual column after grid
+                full_col = static_cast<int>(col_off + sub_cols);
+                in_grid_cols = false;
+            } else {
+                full_col = static_cast<int>(col_off + sub_c);
+                in_grid_cols = true;
+            }
+        }
 
         // Filter to valid traversals (proper enter + exit, or closed ring)
         std::vector<LightTraversal*> valid;
@@ -287,30 +311,29 @@ static void walk_ring(
 
         if (valid.empty()) continue;
 
-        // ---- Coverage fraction ----
+        // ---- Coverage fraction (only for in-grid cells) ----
         float frac = 0.0f;
 
-        if (valid.size() == 1 && valid[0]->entry_side == Side::NONE
-            && valid[0]->is_closed_ring()) {
-            // Small polygon entirely within one cell — shoelace area
-            frac = static_cast<float>(
-                denseburn::closed_ring_covered_fraction(cr.box, valid[0]->coords));
-        } else if (valid.size() == 1) {
-            // Single traversal — analytical fast path using perimeter_distance
-            frac = static_cast<float>(
-                denseburn::analytical_covered_fraction(
-                    cr.box, valid[0]->coords,
-                    valid[0]->entry_side, valid[0]->exit_side));
-        } else {
-            // Multiple traversals — use left_hand_area
-            std::vector<const std::vector<Coordinate>*> coord_lists;
-            for (auto* t : valid) {
-                coord_lists.push_back(&t->coords);
-            }
-            double cell_area = cr.box.area();
-            if (cell_area > 0.0) {
+        if (in_grid_cols) {
+            if (valid.size() == 1 && valid[0]->entry_side == Side::NONE
+                && valid[0]->is_closed_ring()) {
                 frac = static_cast<float>(
-                    exactextract::left_hand_area(cr.box, coord_lists) / cell_area);
+                    denseburn::closed_ring_covered_fraction(cr.box, valid[0]->coords));
+            } else if (valid.size() == 1) {
+                frac = static_cast<float>(
+                    denseburn::analytical_covered_fraction(
+                        cr.box, valid[0]->coords,
+                        valid[0]->entry_side, valid[0]->exit_side));
+            } else {
+                std::vector<const std::vector<Coordinate>*> coord_lists;
+                for (auto* t : valid) {
+                    coord_lists.push_back(&t->coords);
+                }
+                double cell_area = cr.box.area();
+                if (cell_area > 0.0) {
+                    frac = static_cast<float>(
+                        exactextract::left_hand_area(cr.box, coord_lists) / cell_area);
+                }
             }
         }
 
@@ -360,7 +383,12 @@ static void walk_ring(
 }
 
 
-// ---- Process geometry (unchanged from Item 1) ----
+// ---- Process geometry: per-POLYGON processing with padding-aware sweep ----
+//
+// For MULTIPOLYGON/GEOMETRYCOLLECTION, each POLYGON component is processed
+// independently with its own subgrid, row_data, and winding sweep. This
+// prevents winding from one disjoint component bleeding into another's
+// boundary cells (which would incorrectly promote partial coverage to 1.0).
 
 static void process_geometry(
     GEOSContextHandle_t ctx,
@@ -464,7 +492,9 @@ static void process_geometry(
         int full_row = static_cast<int>(row_off + sr) + 1;
 
         for (auto& mc : merged) {
-            if (winding != 0 && prev_col >= 0 && mc.col > prev_col + 1) {
+            // Emit interior run between previous boundary cell and this one.
+            // prev_col > -2 means at least one cell has been seen (including padding).
+            if (winding != 0 && prev_col > -2 && mc.col > prev_col + 1) {
                 all_runs.push_back({
                     full_row,
                     prev_col + 1 + 1,

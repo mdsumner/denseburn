@@ -82,7 +82,24 @@ Forked from gridburn as the development home for the scanline refactor.
 * No code changes needed: `Box::crossing()` is deterministic for coincident
   edges, so independent per-polygon walks produce complementary fractions.
 
-## Roadmap (remaining)
+## Item 6: Edge case validation
 
-* Item 6: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
+* `inst/docs-design/denseburn-refactor/validate-edge-cases.R`: 26 tests across
+  12 categories — vertex on grid node, vertex on cell edge, horizontal/vertical
+  edges (including on grid lines), thin slivers (horiz/vert/diagonal/sub-cell),
+  polygon within one cell, edge along grid line, near-degenerate shapes
+  (acute triangle, needle), extreme resolution ratios (1×1 to 500×500),
+  polygon at/beyond/partially-outside grid extent, collinear vertices,
+  mixed-scale multipolygon.
+* Fixed padding column winding: edges in grid-padding columns now contribute
+  winding deltas, fixing polygons that extend beyond the grid extent.
+* Fixed sweep start condition: `prev_col > -2` allows interior runs after
+  padding cells (was `prev_col >= 0` which blocked the first grid column).
+* Accepted divergence for overlapping MULTIPOLYGON components (invalid
+  geometry): scanline gives additive coverage (1.04), sparse gives 1.0
+  via flood fill. Both defensible.
+* All other edge cases pass: 25/26 exact match, 1 accepted divergence.
+
+## Roadmap
+
 * Final: migrate to controlledburn as the production home

@@ -31,8 +31,8 @@ extern "C" SEXP _denseburn_cpp_scanline_burn(SEXP wkb_list, SEXP xmin, SEXP ymin
 extern "C" {
 static const R_CallMethodDef CallEntries[] = {
     {"_denseburn_cpp_burn_sparse",    (DL_FUNC) &_denseburn_cpp_burn_sparse,    7},
-    {"_denseburn_cpp_denseburn_init", (DL_FUNC) &_denseburn_cpp_denseburn_init, 0},
     {"_denseburn_cpp_scanline_burn",  (DL_FUNC) &_denseburn_cpp_scanline_burn,  7},
+    {"_denseburn_cpp_denseburn_init",  (DL_FUNC) &_denseburn_cpp_denseburn_init,  0},
     {NULL, NULL, 0}
 };
 }

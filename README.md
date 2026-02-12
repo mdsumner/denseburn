@@ -16,7 +16,7 @@ home will be [controlledburn](https://github.com/hypertidy/controlledburn).
 | 3 | Analytical single-edge coverage (perimeter_distance) | ✓ validated |
 | 4 | Benchmark perimeter-proportional scaling | ✓ confirmed O(n) |
 | 5 | Multi-polygon shared-boundary handling | ✓ complementary |
-| 6 | Edge cases (vertex on boundary, horizontal edges, slivers) | planned |
+| 6 | Edge cases (boundary vertices, slivers, extent clipping) | ✓ 25/26 + 1 accepted |
 
 ## Installation
 
