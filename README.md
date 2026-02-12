@@ -14,7 +14,7 @@ home will be [controlledburn](https://github.com/hypertidy/controlledburn).
 | 1 | Scanline sweep prototype (Cell class + winding count) | ✓ validated |
 | 2 | Lightweight walk (no Cell class, Box::crossing direct) | ✓ validated |
 | 3 | Analytical single-edge coverage (perimeter_distance) | ✓ validated |
-| 4 | Benchmark perimeter-proportional scaling vs tiled dense | planned |
+| 4 | Benchmark perimeter-proportional scaling | ✓ confirmed O(n) |
 | 5 | Multi-polygon shared-boundary handling | planned |
 | 6 | Edge cases (vertex on boundary, horizontal edges, slivers) | planned |
 

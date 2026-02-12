@@ -54,9 +54,23 @@ Forked from gridburn as the development home for the scanline refactor.
   as alternative to `dimension`. New dependency on `wk` (already a dependency
   of geos and sf).
 
+## Item 4: Benchmark perimeter-proportional scaling
+
+* `inst/docs-design/denseburn-refactor/benchmark-scaling.R`: scaling benchmark
+  across grid resolutions (100–3200) for five geometry types.
+* Confirmed O(perimeter) scaling for `burn_scanline`: median log2 rate ≈ 1.0
+  (linear) across all geometry types. `burn_sparse` trends toward ≈ 2.0
+  (quadratic) at higher resolutions.
+* Speedup grows with resolution: star polygon 17× at 3200×3200, jagged
+  coastline 9×, simple shapes 2–6×.
+* Memory: 10M-cell grid requires 39 MB dense matrix vs 200–600 KB sparse
+  output. Real-world test (CGAZ world polygons, 32K×16K = 500M cells):
+  50 MB sparse vs ~2 GB dense.
+* Edge count scaling confirms linear boundary growth: star/jagged median
+  ≈ 1.0, axis-aligned shapes have zero edges (all boundaries on grid lines).
+
 ## Roadmap (remaining)
 
-* Item 4: Benchmark perimeter-proportional scaling vs tiled dense approach
 * Item 5: Multi-polygon shared-boundary handling
 * Item 6: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
 * Final: migrate to controlledburn as the production home
