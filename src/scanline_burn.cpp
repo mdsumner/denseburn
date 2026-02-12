@@ -1,9 +1,8 @@
 // scanline_burn.cpp — scanline polygon rasterization with exact coverage fractions
 //
-// Item 2: lightweight walk using Box::crossing() directly instead of
-// Cell::take(). No Cell class allocation. Coverage via left_hand_area
-// (same as Cell::covered_fraction) with shoelace shortcut for closed
-// rings within a single cell.
+// Item 3: analytical coverage for single-traversal cells using
+// perimeter_distance to select correct CCW corner walk. Falls back to
+// left_hand_area for multi-traversal cells. No Cell class allocation.
 //
 // Copyright (c) 2025 Michael Sumner
 // Licensed under Apache License 2.0
@@ -296,9 +295,14 @@ static void walk_ring(
             // Small polygon entirely within one cell — shoelace area
             frac = static_cast<float>(
                 denseburn::closed_ring_covered_fraction(cr.box, valid[0]->coords));
+        } else if (valid.size() == 1) {
+            // Single traversal — analytical fast path using perimeter_distance
+            frac = static_cast<float>(
+                denseburn::analytical_covered_fraction(
+                    cr.box, valid[0]->coords,
+                    valid[0]->entry_side, valid[0]->exit_side));
         } else {
-            // Use left_hand_area for all traversals (single or multiple).
-            // This is the same algorithm as Cell::covered_fraction.
+            // Multiple traversals — use left_hand_area
             std::vector<const std::vector<Coordinate>*> coord_lists;
             for (auto* t : valid) {
                 coord_lists.push_back(&t->coords);

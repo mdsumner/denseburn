@@ -38,11 +38,24 @@ Forked from gridburn as the development home for the scanline refactor.
   no longer used by `burn_scanline()` — only by the original `burn_sparse()`.
 * Validated against `burn_sparse()` — identical output (8/8 tests pass).
 
+## Item 3: Analytical single-edge coverage
+
+* For single-traversal boundary cells (~90% of all boundary cells), coverage
+  fraction is now computed analytically: the traversal path + CW cell boundary
+  corners from exit to entry form a closed polygon, area via shoelace formula.
+  No `left_hand_area` chain-chasing, no heap allocation.
+* Uses `perimeter_distance()` (same convention as `left_hand_area`) to
+  determine which corners fall in the CW arc from exit to entry. This
+  correctly handles all entry/exit side combinations including same-side cases.
+* Multi-traversal cells (polygon vertex in cell, or multiple edges crossing)
+  still fall back to `left_hand_area()`.
+* Also added user-friendly defaults: `extent` derived from geometry bbox,
+  `dimension` auto-fitted (256 cells on long axis), and `resolution` parameter
+  as alternative to `dimension`. New dependency on `wk` (already a dependency
+  of geos and sf).
+
 ## Roadmap (remaining)
 
-* Item 3: Analytical single-edge coverage (bypass left_hand_area for
-  single-traversal cells — requires correct perimeter-distance logic to
-  select the right CCW corner walk direction)
 * Item 4: Benchmark perimeter-proportional scaling vs tiled dense approach
 * Item 5: Multi-polygon shared-boundary handling
 * Item 6: Edge cases (vertex on cell boundary, horizontal/vertical edges, slivers)
